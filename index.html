@@ -8,7 +8,7 @@
 <body>
     <script>
 // ======================================================
-// ArNet Transceiver Web GUI (Vanilla JavaScript)
+// ArNet Transceiver Web GUI (Vanilla JavaScript - Fixed Metering)
 // ======================================================
 
 (function () {
@@ -47,7 +47,6 @@
             font-family: Consolas, monospace;
             box-sizing: border-box;
         }
-        /* Row 1 */
         .top-grid { display: grid; grid-template-columns: 220px 1fr; gap: 8px; height: 120px; }
         .meter-container {
             background-color: #050508;
@@ -58,12 +57,9 @@
             width: 200px;
             height: 90px;
         }
-        /* Row 2 */
         .controls-grid { display: grid; grid-template-columns: 200px 10px 1fr; height: 135px; }
-        /* Row 3 */
         .scope-grid { background-color: #050508; border: 1px solid #222222; border-radius: 4px; padding: 6px; height: 190px; display: flex; flex-direction: column; }
         .scope-screen { background-color: #000000; border: 1px solid #111115; flex-grow: 1; position: relative; overflow: hidden; }
-        /* Row 4 */
         .bottom-grid { display: grid; grid-template-columns: 1fr 10px 110px 6px 110px; height: 35px; align-items: center; }
     `;
     document.head.appendChild(styleEl);
@@ -171,6 +167,7 @@
     let mediaRecorder = null;
     let recordedChunks = [];
     let lastProcessedAudioBlob = null;
+    let lastAudioPcmArray = null; // Stores PCM buffer for true RMS calculation matching PowerShell logic
     let isPlaying = false;
     let playbackStartTime = 0;
     let currentAmplitude = 0.02;
@@ -202,21 +199,18 @@
     const btnSave = document.getElementById('btnSave');
     const btnLoad = document.getElementById('btnLoad');
 
-    // Setup Canvas contexts
     const scopeCtx = canvasScope.getContext('2d');
     const wfCtx = imgWaterfall.getContext('2d');
     const meterCtx = canvasMeter.getContext('2d');
 
-    // Waterfall Offscreen Buffer Setup
     const wfWidth = 160;
     const wfHeight = 80;
     const wfOffscreen = document.createElement('canvas');
     wfOffscreen.width = wfWidth;
     wfOffscreen.height = wfHeight;
     const wfOffCtx = wfOffscreen.getContext('2d');
-    let wfPixelData = wfOffCtx.createImageData(wfWidth, wfHeight);
+    const wfPixelData = wfOffCtx.createImageData(wfWidth, wfHeight);
 
-    // --- Helper Functions ---
     function initAudioContext() {
         if (!audioCtx) {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -241,28 +235,19 @@
         };
 
         if (mode === 'AARM') {
-            addOpt('ALFRS');
-            addOpt('SOLIDBAND');
-            addOpt('AHFRS 2');
-            addOpt('ATF 1');
+            addOpt('ALFRS'); addOpt('SOLIDBAND'); addOpt('AHFRS 2'); addOpt('ATF 1');
             comboBand.selectedIndex = 1;
-            btnLoad.disabled = true;
-            btnLoad.style.opacity = '0.5';
-            btnLoad.style.cursor = 'not-allowed';
+            btnLoad.disabled = true; btnLoad.style.opacity = '0.5'; btnLoad.style.cursor = 'not-allowed';
             txtVideoLegend.style.display = 'none';
         } else if (mode === 'ABM') {
             addOpt('AHFRS 1 (Low)');
             comboBand.selectedIndex = 0;
-            btnLoad.disabled = false;
-            btnLoad.style.opacity = '1';
-            btnLoad.style.cursor = 'pointer';
+            btnLoad.disabled = false; btnLoad.style.opacity = '1'; btnLoad.style.cursor = 'pointer';
             txtVideoLegend.style.display = 'none';
         } else if (mode === 'ABMTV') {
             addOpt('AHFRS 1 (High)');
             comboBand.selectedIndex = 0;
-            btnLoad.disabled = false;
-            btnLoad.style.opacity = '1';
-            btnLoad.style.cursor = 'pointer';
+            btnLoad.disabled = false; btnLoad.style.opacity = '1'; btnLoad.style.cursor = 'pointer';
             txtVideoLegend.style.display = 'inline';
         }
         updateFrequencyLimits();
@@ -290,16 +275,13 @@
         if (isNaN(val) || val < minFreq) txtFrequency.value = minFreq;
         else if (val > maxFreq) txtFrequency.value = maxFreq;
     });
-
     updateBandList();
 
-    // Carrier Slider UI sync
     sliderCarrier.addEventListener('input', () => {
         const percent = Math.round((parseFloat(sliderCarrier.value) / 0.5) * 100);
         txtCarrierVal.textContent = `${percent}%`;
     });
 
-    // Display Toggle
     btnToggleDisplay.addEventListener('click', () => {
         isScopeMode = !isScopeMode;
         if (isScopeMode) {
@@ -315,7 +297,6 @@
         }
     });
 
-    // --- Morse Code Mapping & Audio Generation ---
     const morseDict = {
         'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.',
         'F': '..-.', 'G': '--.', 'H': '....', 'I': '..', 'J': '.---',
@@ -336,22 +317,17 @@
         const buffer = new ArrayBuffer(44 + pcmLength);
         const view = new DataView(buffer);
 
-        // RIFF chunk
         view.setUint32(0, 0x52494646, false); // "RIFF"
         view.setUint32(4, 36 + pcmLength, true);
         view.setUint32(8, 0x57415645, false); // "WAVE"
-        
-        // fmt sub-chunk
         view.setUint32(12, 0x666D7420, false); // "fmt "
         view.setUint32(16, 16, true);
-        view.setUint16(20, 1, true); // PCM format
-        view.setUint16(22, 1, true); // Mono channel
+        view.setUint16(20, 1, true); 
+        view.setUint16(22, 1, true); 
         view.setUint32(24, sampleRate, true);
         view.setUint32(28, sampleRate * 2, true);
-        view.setUint16(32, 2, true); // Block align
-        view.setUint16(34, 16, true); // Bits per sample
-
-        // data sub-chunk
+        view.setUint16(32, 2, true); 
+        view.setUint16(34, 16, true); 
         view.setUint32(36, 0x64617461, false); // "data"
         view.setUint32(40, pcmLength, true);
 
@@ -360,7 +336,34 @@
             view.setInt16(offset, pcmShorts[i], true);
         }
 
+        lastAudioPcmArray = pcmShorts; // Keep track of PCM array for realistic RMS reading
         return new Blob([buffer], { type: 'audio/wav' });
+    }
+
+    function getPcmRms(elapsedSec, windowSize) {
+        if (!lastAudioPcmArray || lastAudioPcmArray.length === 0) return 0.02;
+        const sampleRate = 22050;
+        const currentSampleIdx = Math.floor(elapsedSec * sampleRate);
+
+        if (currentSampleIdx >= lastAudioPcmArray.length) return 0.02;
+
+        let sumSq = 0.0;
+        let count = 0;
+        for (let i = 0; i < windowSize; i += 2) {
+            let idx = currentSampleIdx + i;
+            if (idx < lastAudioPcmArray.length) {
+                let sample = lastAudioPcmArray[idx];
+                let norm = sample / 32768.0;
+                sumSq += (norm * norm);
+                count++;
+            }
+        }
+
+        if (count > 0) {
+            let rms = Math.Sqrt ? Math.Sqrt(sumSq / count) : Math.sqrt(sumSq / count);
+            return rms > 0.02 ? Math.min(1.0, rms * 3.8) : 0.02;
+        }
+        return 0.02;
     }
 
     function playAudioBlob(blob) {
@@ -396,7 +399,6 @@
             let dur = symbol === '.' ? dotDuration : symbol === '-' ? dotDuration * 3.0 : dotDuration * 3.5;
             let count = Math.floor(dur * sampleRate);
             for (let i = 0; i < count; i++) toneState.push(symbol !== ' ');
-            // silence gap
             let gapCount = Math.floor(dotDuration * 0.8 * sampleRate);
             for (let i = 0; i < gapCount; i++) toneState.push(false);
         }
@@ -454,7 +456,6 @@
                 mediaRecorder.ondataavailable = e => recordedChunks.push(e.data);
                 mediaRecorder.onstop = async () => {
                     const blob = new Blob(recordedChunks, { type: 'audio/webm' });
-                    // Decode blob to PCM for mock FM processing
                     const arrayBuffer = await blob.arrayBuffer();
                     const decoded = await audioCtx.decodeAudioData(arrayBuffer);
                     const rawChannel = decoded.getChannelData(0);
@@ -468,7 +469,7 @@
                     const carrierLevel = parseFloat(sliderCarrier.value);
                     const devMult = isWide ? 1.0 : 0.25;
 
-                    for (let i = 0; i < rawChannel.length; i += 2) { // downsample to 22050 approx
+                    for (let i = 0; i < rawChannel.length; i += 2) {
                         let normVoice = rawChannel[i];
                         let voiceAbs = Math.abs(normVoice);
 
@@ -565,7 +566,6 @@
                     const pcmSamples = [];
 
                     for (let y = 0; y < scanHeight; y++) {
-                        // Sync pulse
                         for (let s = 0; s < syncSamples; s++) {
                             phaseSync += (2.0 * Math.PI * 1200.0) / sampleRate;
                             pcmSamples.push(Math.round(14000.0 * Math.sin(phaseSync)));
@@ -602,7 +602,6 @@
         fileInput.click();
     });
 
-    // Save WAV File
     btnSave.addEventListener('click', () => {
         if (lastProcessedAudioBlob) {
             const url = URL.createObjectURL(lastProcessedAudioBlob);
@@ -617,15 +616,25 @@
         }
     });
 
+    // --- Dynamic Amplitude Function matching PowerShell Backend ---
+    function getCurrentAudioAmplitude() {
+        if (isRecording) {
+            const steadyCarrier = 0.40 + (parseFloat(sliderCarrier.value) * 0.8);
+            const jitter = (Math.random() - 0.5) * 0.02;
+            return Math.min(0.95, Math.max(0.20, steadyCarrier + jitter));
+        }
+
+        if (isPlaying && lastProcessedAudioBlob) {
+            const elapsedSec = (Date.now() - playbackStartTime) / 1000.0;
+            return getPcmRms(elapsedSec, 200);
+        }
+
+        return 0.02; // Standby default idle floor
+    }
+
     // --- Real-time Animation Loop (Meter & Scope/Waterfall) ---
     function renderUIFrame() {
-        // Amplitude estimation simulation
-        let targetAmp = 0.02;
-        if (isRecording) {
-            targetAmp = Math.min(0.95, Math.max(0.20, 0.40 + (parseFloat(sliderCarrier.value) * 0.8) + (Math.random() - 0.5) * 0.02));
-        } else if (isPlaying) {
-            targetAmp = 0.5 + Math.sin(Date.now() * 0.01) * 0.3;
-        }
+        let targetAmp = getCurrentAudioAmplitude();
 
         let stepSpeed = targetAmp < currentAmplitude ? 0.18 : 0.45;
         currentAmplitude += (targetAmp - currentAmplitude) * stepSpeed;
@@ -635,7 +644,6 @@
 
         // 1. Draw S-Meter Needle
         meterCtx.clearRect(0, 0, 200, 90);
-        // Draw static dial paths
         meterCtx.strokeStyle = '#666';
         meterCtx.lineWidth = 2;
         meterCtx.beginPath();
@@ -648,7 +656,6 @@
         meterCtx.arc(100, 85, 70, -0.7, 0);
         meterCtx.stroke();
 
-        // Meter labels
         meterCtx.fillStyle = '#AAAAAA';
         meterCtx.font = '8px Consolas';
         meterCtx.fillText('S1', 22, 55);
@@ -664,9 +671,8 @@
         meterCtx.font = 'bold 9px Consolas';
         meterCtx.fillText('S-METER', 78, 42);
         meterCtx.fillStyle = '#3399FF';
-        meterCtx.fillText('db', 87, 56);
+        meterCtx.fillText('Po W', 87, 56);
 
-        // Needle Pivot
         meterCtx.fillStyle = '#444444';
         meterCtx.strokeStyle = '#AAAAAA';
         meterCtx.beginPath();
@@ -674,7 +680,6 @@
         meterCtx.fill();
         meterCtx.stroke();
 
-        // Needle Line
         const angleDeg = 150.0 - (Math.min(1.0, amp) * 120.0);
         const angleRad = (angleDeg * Math.PI) / 180.0;
         const radius = 65.0;
@@ -697,7 +702,6 @@
 
             scopeCtx.clearRect(0, 0, width, height);
 
-            // Grid markers
             scopeCtx.strokeStyle = '#005577';
             scopeCtx.lineWidth = 1;
             scopeCtx.setLineDash([2, 2]);
@@ -706,7 +710,6 @@
             });
             scopeCtx.setLineDash([]);
 
-            // Scope Waveform Path
             scopeCtx.strokeStyle = '#FFFF00';
             scopeCtx.fillStyle = 'rgba(34, 255, 255, 0.13)';
             scopeCtx.lineWidth = 1.5;
@@ -746,18 +749,15 @@
             scopeCtx.fill();
             scopeCtx.stroke();
         } else {
-            // Waterfall Mode
             imgWaterfall.width = imgWaterfall.clientWidth || 320;
             imgWaterfall.height = imgWaterfall.clientHeight || 160;
 
-            // Shift down pixels
             const stride = wfWidth * 4;
             const imgDataArr = wfPixelData.data;
             for (let i = imgDataArr.length - 1; i >= stride; i--) {
                 imgDataArr[i] = imgDataArr[i - stride];
             }
 
-            // Draw top new row
             const wfCarrierX = wfWidth * 0.25;
             const wfAudioX = wfWidth * 0.50;
             const wfVideoX = wfWidth * 0.75;
