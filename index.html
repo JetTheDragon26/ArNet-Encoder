@@ -340,7 +340,7 @@
         return new Blob([buffer], { type: 'audio/wav' });
     }
 
-    function getPcmRms(elapsedSec, windowSize) {
+   function getPcmRms(elapsedSec, windowSize) {
         if (!lastAudioPcmArray || lastAudioPcmArray.length === 0) return 0.02;
         const sampleRate = 22050;
         const currentSampleIdx = Math.floor(elapsedSec * sampleRate);
@@ -360,10 +360,22 @@
         }
 
         if (count > 0) {
-            let rms = Math.sqrt(sumSq / count);
+            let rms = Math.sqrt(sumSq / count); // Fixed Math.sqrt casing
             return rms > 0.02 ? Math.min(1.0, rms * 3.8) : 0.02;
         }
         return 0.02;
+    }
+
+    function playAudioBlob(blob) {
+        if (audioCtx && audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+        const audioURL = URL.createObjectURL(blob);
+        const audio = new Audio(audioURL);
+        playbackStartTime = Date.now();
+        isPlaying = true;
+        audio.play().catch(err => console.error("Audio playback blocked:", err));
+        audio.onended = () => { isPlaying = false; };
     }
 
     function playAudioBlob(blob) {
