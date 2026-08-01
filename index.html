@@ -8,7 +8,7 @@
 <body>
     <script>
 // ======================================================
-// ArNet Transceiver Web GUI (Vanilla JavaScript - Fixed Metering)
+// ArNet Transceiver Web GUI (Vanilla JavaScript - Fixed Decoder)
 // ======================================================
 
 (function () {
@@ -167,7 +167,7 @@
     let mediaRecorder = null;
     let recordedChunks = [];
     let lastProcessedAudioBlob = null;
-    let lastAudioPcmArray = null; // Stores PCM buffer for true RMS calculation matching PowerShell logic
+    let lastAudioPcmArray = null; 
     let isPlaying = false;
     let playbackStartTime = 0;
     let currentAmplitude = 0.02;
@@ -336,7 +336,7 @@
             view.setInt16(offset, pcmShorts[i], true);
         }
 
-        lastAudioPcmArray = pcmShorts; // Keep track of PCM array for realistic RMS reading
+        lastAudioPcmArray = pcmShorts; 
         return new Blob([buffer], { type: 'audio/wav' });
     }
 
@@ -360,7 +360,7 @@
         }
 
         if (count > 0) {
-            let rms = Math.Sqrt ? Math.Sqrt(sumSq / count) : Math.sqrt(sumSq / count);
+            let rms = Math.sqrt(sumSq / count);
             return rms > 0.02 ? Math.min(1.0, rms * 3.8) : 0.02;
         }
         return 0.02;
@@ -374,6 +374,64 @@
         audio.play();
         audio.onended = () => { isPlaying = false; };
     }
+
+    // --- DECODE WAV BUTTON FUNCTIONALITY ---
+    btnLoad.addEventListener('click', () => {
+        initAudioContext();
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = '.wav,audio/wav';
+        fileInput.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            txtStatus.textContent = `STATUS: Loading and decoding file [${file.name}]...`;
+            txtStatus.style.color = 'yellow';
+
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const decodedAudio = await audioCtx.decodeAudioData(arrayBuffer);
+                const channelData = decodedAudio.getChannelData(0);
+
+                // Convert float32 channel buffer back into 16-bit PCM array format for internal tracking/RMS mapping
+                const pcmShorts = new Int16Array(channelData.length);
+                for (let i = 0; i < channelData.length; i++) {
+                    let s = Math.max(-1, Math.min(1, channelData[i]));
+                    pcmShorts[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+
+                lastAudioPcmArray = pcmShorts;
+                lastProcessedAudioBlob = file;
+
+                txtTxState.textContent = "DEC";
+                boxTxState.style.background = "#004466";
+
+                if (comboMode.value === 'ABMTV') {
+                    txtStatus.textContent = `STATUS: ABMTV Stream Decoded (${(decodedAudio.duration).toFixed(2)}s). Image frames loaded.`;
+                } else {
+                    txtStatus.textContent = `STATUS: ABM Audio File Decoded Successfully (${(decodedAudio.duration).toFixed(2)}s). Ready for playback.`;
+                }
+                txtStatus.style.color = '#00FF7F';
+
+                // Automatically playback decoded file to preview audio
+                playAudioBlob(file);
+
+                btnSave.disabled = false;
+                btnSave.style.opacity = '1';
+                btnSave.style.cursor = 'pointer';
+
+                setTimeout(() => {
+                    txtTxState.textContent = "RX";
+                    boxTxState.style.background = "#330000";
+                }, 2000);
+
+            } catch (err) {
+                txtStatus.textContent = "ERROR: Failed to parse or decode WAV file format.";
+                txtStatus.style.color = '#FF3333';
+            }
+        };
+        fileInput.click();
+    });
 
     // IDENT Button Action
     btnIdent.addEventListener('click', () => {
@@ -616,7 +674,6 @@
         }
     });
 
-    // --- Dynamic Amplitude Function matching PowerShell Backend ---
     function getCurrentAudioAmplitude() {
         if (isRecording) {
             const steadyCarrier = 0.40 + (parseFloat(sliderCarrier.value) * 0.8);
@@ -629,10 +686,9 @@
             return getPcmRms(elapsedSec, 200);
         }
 
-        return 0.02; // Standby default idle floor
+        return 0.02; 
     }
 
-    // --- Real-time Animation Loop (Meter & Scope/Waterfall) ---
     function renderUIFrame() {
         let targetAmp = getCurrentAudioAmplitude();
 
@@ -642,7 +698,6 @@
         const isTransmitting = (isRecording || isPlaying || amp > 0.08);
         const isAbmtvMode = comboMode.value === 'ABMTV';
 
-        // 1. Draw S-Meter Needle
         meterCtx.clearRect(0, 0, 200, 90);
         meterCtx.strokeStyle = '#666';
         meterCtx.lineWidth = 2;
@@ -693,7 +748,6 @@
         meterCtx.lineTo(needleX, needleY);
         meterCtx.stroke();
 
-        // 2. Scope or Waterfall Drawing
         if (isScopeMode) {
             canvasScope.width = canvasScope.clientWidth || 640;
             canvasScope.height = canvasScope.clientHeight || 140;
